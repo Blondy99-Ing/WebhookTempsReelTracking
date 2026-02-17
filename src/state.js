@@ -1,39 +1,59 @@
+// src/state.js
 const fs = require("fs");
 const path = require("path");
 
-async function ensureDir(p) {
-  await fs.promises.mkdir(p, { recursive: true });
-}
-
 async function loadState(stateFile, logger) {
-  try {
-    const full = path.resolve(stateFile);
-    await ensureDir(path.dirname(full));
+  const full = path.resolve(stateFile);
 
+  try {
     if (!fs.existsSync(full)) {
-      const init = { lastLocationId: 0, lastAlertId: 0 };
-      await fs.promises.writeFile(full, JSON.stringify(init, null, 2), "utf-8");
-      return init;
+      logger.warn("[STATE] file not found, creating new one");
+      return { lastLocationId: 0, lastAlertId: 0 };
     }
 
     const raw = await fs.promises.readFile(full, "utf-8");
-    const state = JSON.parse(raw || "{}");
+    const json = JSON.parse(raw || "{}");
 
-    state.lastLocationId = Number(state.lastLocationId || 0);
-    state.lastAlertId = Number(state.lastAlertId || 0);
+    // ✅ support snake_case + camelCase
+    const lastLocationId =
+      json.lastLocationId ??
+      json.last_location_id ??
+      0;
 
-    return state;
+    const lastAlertId =
+      json.lastAlertId ??
+      json.last_alert_id ??
+      0;
+
+    return {
+      lastLocationId: Number(lastLocationId || 0),
+      lastAlertId: Number(lastAlertId || 0),
+    };
   } catch (err) {
-    logger?.warn?.({ message: err.message }, "[STATE] load failed => fallback");
+    logger.error({ err }, "[STATE] load error");
     return { lastLocationId: 0, lastAlertId: 0 };
   }
 }
 
 async function saveState(stateFile, state, logger) {
   const full = path.resolve(stateFile);
-  await ensureDir(path.dirname(full));
-  await fs.promises.writeFile(full, JSON.stringify(state, null, 2), "utf-8");
-  logger?.debug?.({ stateFile }, "[STATE] saved");
+
+  try {
+    await fs.promises.writeFile(
+      full,
+      JSON.stringify(
+        {
+          lastLocationId: Number(state.lastLocationId || 0),
+          lastAlertId: Number(state.lastAlertId || 0),
+        },
+        null,
+        2
+      ),
+      "utf-8"
+    );
+  } catch (err) {
+    logger.error({ err }, "[STATE] save error");
+  }
 }
 
 module.exports = {

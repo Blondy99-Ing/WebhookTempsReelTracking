@@ -1,3 +1,4 @@
+// src/config.js
 require("dotenv").config();
 
 function must(name, fallback = null) {
@@ -33,9 +34,21 @@ module.exports = {
     alertEvent: process.env.WEBHOOK_ALERT_EVENT || "alert.batch",
   },
 
+  // ✅ Solution 1: drain loop (pas de setInterval fixe)
   poll: {
-    intervalMs: int("POLL_INTERVAL_MS", 2000),
     batchSize: int("BATCH_SIZE", 300),
+
+    // 🔥 quand il y a du trafic (quasi temps réel)
+    hotIntervalMs: int("POLL_HOT_INTERVAL_MS", 250),
+
+    // 💤 quand il n’y a rien à envoyer
+    idleIntervalMs: int("POLL_IDLE_INTERVAL_MS", 1500),
+
+    // ⚠️ quand webhook down / erreurs
+    errorBackoffMs: int("POLL_ERROR_BACKOFF_MS", 2000),
+
+    // (optionnel) protection: max loops par tick (si ta DB spam trop)
+    maxDrainLoops: int("POLL_MAX_DRAIN_LOOPS", 1000),
   },
 
   http: {

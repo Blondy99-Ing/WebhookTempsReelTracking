@@ -3,46 +3,60 @@ const pino = require("pino");
 const config = require("./config");
 
 const { connectDb } = require("./db");
-const { loadState } = require("./state");
+const { loadState, saveState } = require("./state");
 const { startPoller } = require("./poller");
+const { syncCursorsWithDb } = require("./cursor");
 
 (async () => {
-  // ✅ logger très tôt
   const logger = pino({
     level: config.logLevel || "info",
     transport:
       process.env.NODE_ENV !== "production"
-        ? { target: "pino-pretty", options: { colorize: true, translateTime: "HH:MM:ss.l" } }
+        ? {
+            target: "pino-pretty",
+            options: {
+              colorize: true,
+              translateTime: "HH:MM:ss.l",
+            },
+          }
         : undefined,
   });
 
   try {
     logger.info(
       {
-        mysql: {
-          host: config.mysql.host,
-          port: config.mysql.port,
-          database: config.mysql.database,
-          user: config.mysql.user,
-        },
+        mysql: config.mysql,
         laravelUrl: config.laravel.url,
-        laravelEvent: config.laravel.event,
-        poll: config.poll,
-        http: config.http,
+        locationEvent: config.laravel.locationEvent,
+        alertEvent: config.laravel.alertEvent,
         stateFile: config.stateFile,
       },
       "[BRIDGE] boot"
     );
 
-    // ✅ DB
     const db = await connectDb(config.mysql, logger);
-    logger.info("[DB] Connected");
+    logger.info("[DB] connected");
 
-    // ✅ State
     const state = await loadState(config.stateFile, logger);
-    logger.info({ stateFile: config.stateFile, lastLocationId: state.lastLocationId ?? null }, "[STATE] loaded");
 
-    // ✅ Start poller
+    const changed = await syncCursorsWithDb({
+      db,
+      state,
+      logger,
+      startFromNow: true,
+    });
+
+    if (changed) {
+      await saveState(config.stateFile, state, logger);
+      logger.info(
+        {
+          lastLocationId: state.lastLocationId,
+          lastAlertId: state.lastAlertId,
+        },
+        "[STATE] normalized & saved"
+      );
+    }
+
     startPoller({
       db,
       state,
