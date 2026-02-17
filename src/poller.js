@@ -1,11 +1,20 @@
 // src/poller.js
-const { saveState } = require("./state");
-const { sendBatchToLaravel } = require("./webhook");
+// (Fichier corrigé : suppression de db.execute + LIMIT ?, remplacement par db.query avec entiers sécurisés)
 
+const { sendBatchToLaravel } = require("./webhook");
+const { saveState } = require("./state");
+
+// ---------------- UTILITAIRES ----------------
 function toIsoOrNull(v) {
   if (!v) return null;
   const d = v instanceof Date ? v : new Date(v);
-  return isNaN(d.getTime()) ? null : d.toISOString();
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// Force un entier sûr (évite NaN/undefined/float/string bizarre)
+function toInt(v, fallback = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : fallback;
 }
 
 // ---------------- LOCATIONS ----------------
@@ -27,17 +36,26 @@ function mapLocationRow(row) {
   };
 }
 
+/**
+ * IMPORTANT:
+ * - On évite db.execute() + LIMIT ? (source du bug "mysqld_stmt_execute" sur ton serveur)
+ * - On utilise db.query() avec des entiers "sanitisés".
+ */
 async function fetchLocationsAfterId(db, lastId, limit) {
+  const safeLastId = toInt(lastId, 0);
+  const safeLimit = toInt(limit, 300);
+
   const sql = `
     SELECT
       id, mac_id_gps, latitude, longitude, speed, direction, status, user_name,
       sys_time, datetime, heart_time, processed, trip_id
     FROM locations
-    WHERE id > ?
+    WHERE id > ${safeLastId}
     ORDER BY id ASC
-    LIMIT ?
+    LIMIT ${safeLimit}
   `;
-  const [rows] = await db.execute(sql, [lastId, limit]);
+
+  const [rows] = await db.query(sql);
   return rows || [];
 }
 
@@ -55,205 +73,107 @@ function mapAlertRow(row) {
 }
 
 async function fetchAlertsAfterId(db, lastId, limit) {
+  const safeLastId = toInt(lastId, 0);
+  const safeLimit = toInt(limit, 300);
+
   const sql = `
     SELECT
       id, voiture_id, alert_type, alerted_at, processed, latitude, longitude
     FROM alerts
-    WHERE id > ?
+    WHERE id > ${safeLastId}
     ORDER BY id ASC
-    LIMIT ?
+    LIMIT ${safeLimit}
   `;
-  const [rows] = await db.execute(sql, [lastId, limit]);
+
+  const [rows] = await db.query(sql);
   return rows || [];
 }
 
 // ---------------- LOOP UTILS ----------------
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
+async function drainStream({ db, state, config, logger }) {
+  const batchSize = toInt(config?.poll?.batchSize, 300);
 
-/**
- * Drain pattern:
- * - on envoie batch par batch tant qu'il y a des rows
- * - si webhook OK => on avance cursor & save state
- * - si webhook FAIL => on stop (on ne consomme pas plus)
- */
-async function drainStream({
-  name,
-  db,
-  state,
-  batchSize,
-  fetchAfterId,
-  mapRow,
-  sendEvent,
-  makeData,
-  cursorKey, // "lastLocationId" ou "lastAlertId"
-  stateFile,
-  config,
-  logger,
-}) {
-  let totalSent = 0;
-  let loops = 0;
+  // 1) LOCATIONS
+  const lastLocId = toInt(state?.lastLocationId, 0);
+  const locRows = await fetchLocationsAfterId(db, lastLocId, batchSize);
 
-  while (true) {
-    loops++;
-    const lastId = Number(state[cursorKey] || 0);
-    const rows = await fetchAfterId(db, lastId, batchSize);
-
-    if (!rows.length) break;
-
-    const items = rows.map(mapRow);
-    const newLastId = Number(rows[rows.length - 1].id);
+  if (locRows.length) {
+    const items = locRows.map(mapLocationRow);
+    const newLastId = toInt(locRows[locRows.length - 1]?.id, lastLocId);
 
     const res = await sendBatchToLaravel({
       url: config.laravel.url,
       token: config.laravel.token,
-      event: sendEvent,
-      data: makeData(items),
+      event: config.laravel.locationEvent,
+      data: { items },
       timeoutMs: config.http.timeoutMs,
       maxRetries: config.http.maxRetries,
       logger,
     });
 
-    if (!res.ok) {
-      logger.warn(
-        { name, keepCursor: lastId, rows: rows.length },
-        `[DRAIN] ${name} webhook failed -> stop draining`
-      );
-      return { ok: false, totalSent };
+    if (res?.ok) {
+      state.lastLocationId = newLastId;
+      await saveState(config.stateFile, state, logger);
+      logger.info({ newLastId, sent: items.length }, "[POLL] locations cursor advanced");
+    } else {
+      logger.warn({ keepLastId: lastLocId, rows: locRows.length }, "[POLL] locations webhook failed => keep cursor");
     }
-
-    // ✅ advance cursor only on success
-    state[cursorKey] = newLastId;
-    await saveState(stateFile, state, logger);
-
-    totalSent += items.length;
-
-    // protection anti-boucle infinie si DB spam
-    if (loops >= 1000) {
-      logger.warn({ name, loops }, `[DRAIN] safety stop (too many loops)`);
-      break;
-    }
-
-    // si on veut envoyer “ultra temps réel”, on continue direct
-    // (pas de sleep ici)
   }
 
-  return { ok: true, totalSent };
+  // 2) ALERTS
+  const lastAlertId = toInt(state?.lastAlertId, 0);
+  const alertRows = await fetchAlertsAfterId(db, lastAlertId, batchSize);
+
+  if (alertRows.length) {
+    const items = alertRows.map(mapAlertRow);
+    const newLastId = toInt(alertRows[alertRows.length - 1]?.id, lastAlertId);
+
+    const res = await sendBatchToLaravel({
+      url: config.laravel.url,
+      token: config.laravel.token,
+      event: config.laravel.alertEvent,
+      data: { items, limit: 10 },
+      timeoutMs: config.http.timeoutMs,
+      maxRetries: config.http.maxRetries,
+      logger,
+    });
+
+    if (res?.ok) {
+      state.lastAlertId = newLastId;
+      await saveState(config.stateFile, state, logger);
+      logger.info({ newLastId, sent: items.length }, "[POLL] alerts cursor advanced");
+    } else {
+      logger.warn({ keepLastId: lastAlertId, rows: alertRows.length }, "[POLL] alerts webhook failed => keep cursor");
+    }
+  }
 }
 
+// ---------------- POLLER ----------------
 function startPoller({ db, state, config, logger }) {
-  const batchSize = Number(config.poll.batchSize || 300);
-
-  // ✅ quasi temps réel : petite latence quand il y a du trafic
-  const hotIntervalMs = Number(config.poll.hotIntervalMs || 250);
-
-  // ✅ quand idle : on ralentit
-  const idleIntervalMs = Number(config.poll.idleIntervalMs || 1500);
-
-  // ✅ backoff si erreur webhook
-  const errorBackoffMs = Number(config.poll.errorBackoffMs || 2000);
+  const intervalMs = Math.max(250, toInt(config?.poll?.intervalMs, 2000));
 
   logger.info(
-    { batchSize, hotIntervalMs, idleIntervalMs, errorBackoffMs },
-    "[POLL] starting (drain loop)"
+    { intervalMs, batchSize: toInt(config?.poll?.batchSize, 300) },
+    "[POLL] starting"
   );
 
-  let stopped = false;
   let running = false;
-  let lastWasIdle = false;
 
   const loop = async () => {
-    if (stopped) return;
-
-    if (running) {
-      // devrait jamais arriver avec setTimeout loop, mais safety
-      return void setTimeout(loop, hotIntervalMs);
-    }
+    if (running) return;
     running = true;
 
     try {
-      // 1) drain locations
-      const locRes = await drainStream({
-        name: "locations",
-        db,
-        state,
-        batchSize,
-        fetchAfterId: fetchLocationsAfterId,
-        mapRow: mapLocationRow,
-        sendEvent: config.laravel.locationEvent, // ex: "location.batch"
-        makeData: (items) => ({ items }),
-        cursorKey: "lastLocationId",
-        stateFile: config.stateFile,
-        config,
-        logger,
-      });
-
-      // 2) drain alerts
-      const alertRes = await drainStream({
-        name: "alerts",
-        db,
-        state,
-        batchSize,
-        fetchAfterId: fetchAlertsAfterId,
-        mapRow: mapAlertRow,
-        sendEvent: config.laravel.alertEvent, // ex: "alert.batch"
-        makeData: (items) => ({ items, limit: 10 }),
-        cursorKey: "lastAlertId",
-        stateFile: config.stateFile,
-        config,
-        logger,
-      });
-
-      const sentLoc = locRes.totalSent || 0;
-      const sentAlert = alertRes.totalSent || 0;
-
-      const ok = locRes.ok && alertRes.ok;
-
-      if (!ok) {
-        lastWasIdle = false;
-        logger.warn(
-          { sentLoc, sentAlert },
-          "[POLL] webhook error -> backoff"
-        );
-        return void setTimeout(loop, errorBackoffMs);
-      }
-
-      const idle = sentLoc === 0 && sentAlert === 0;
-
-      if (!idle) {
-        lastWasIdle = false;
-        logger.info(
-          { sentLoc, sentAlert, lastLocationId: state.lastLocationId, lastAlertId: state.lastAlertId },
-          "[POLL] pushed"
-        );
-        return void setTimeout(loop, hotIntervalMs);
-      }
-
-      // idle
-      if (!lastWasIdle) {
-        logger.debug(
-          { lastLocationId: state.lastLocationId, lastAlertId: state.lastAlertId },
-          "[POLL] idle"
-        );
-      }
-      lastWasIdle = true;
-      return void setTimeout(loop, idleIntervalMs);
+      await drainStream({ db, state, config, logger });
     } catch (err) {
       logger.error({ message: err.message, stack: err.stack }, "[POLL] fatal tick error");
-      return void setTimeout(loop, errorBackoffMs);
     } finally {
       running = false;
     }
   };
 
   loop();
-
-  return {
-    stop: () => {
-      stopped = true;
-    },
-  };
+  setInterval(loop, intervalMs);
 }
 
 module.exports = {
