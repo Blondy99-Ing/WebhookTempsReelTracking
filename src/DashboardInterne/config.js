@@ -1,4 +1,4 @@
-// src/DashboardInterne/config.js
+// src/config.js
 require("dotenv").config();
 
 function must(name, fallback = null) {
@@ -25,17 +25,23 @@ module.exports = {
     database: must("MYSQL_DATABASE"),
   },
 
-  dashboard: {
-    // ✅ variables dédiées dashboard interne (dans le même .env)
-    url: must("DASHINT_DASH_WEBHOOK_URL", process.env.DASH_WEBHOOK_URL),
-    secret: must("DASHINT_INTERNAL_WEBHOOK_SECRET", process.env.INTERNAL_WEBHOOK_SECRET),
+  laravel: {
+    url: must("LARAVEL_WEBHOOK_URL"),
+    token: must("LARAVEL_WEBHOOK_TOKEN"),
+    locationEvent: process.env.WEBHOOK_LOCATION_EVENT || "location.batch",
+    alertEvent: process.env.WEBHOOK_ALERT_EVENT || "alert.batch",
   },
 
   poll: {
     batchSize: int("BATCH_SIZE", 300),
-    hotIntervalMs: int("POLL_HOT_INTERVAL_MS", 250),
-    idleIntervalMs: int("POLL_IDLE_INTERVAL_MS", 1500),
-    errorBackoffMs: int("POLL_ERROR_BACKOFF_MS", 2000),
+
+    // ✅ ce soir : on fixe un rythme stable à 2 secondes
+    hotIntervalMs: int("POLL_HOT_INTERVAL_MS", 2000),
+    idleIntervalMs: int("POLL_IDLE_INTERVAL_MS", 2000),
+
+    // en cas d’erreur
+    errorBackoffMs: int("POLL_ERROR_BACKOFF_MS", 3000),
+
     maxDrainLoops: int("POLL_MAX_DRAIN_LOOPS", 1000),
   },
 
@@ -44,6 +50,6 @@ module.exports = {
     maxRetries: int("HTTP_MAX_RETRIES", 3),
   },
 
-  stateFile: process.env.DASHINT_STATE_FILE || "./state/dashboard-interne.json",
+  stateFile: process.env.STATE_FILE || "./state/state.json",
   logLevel: process.env.LOG_LEVEL || "info",
 };
