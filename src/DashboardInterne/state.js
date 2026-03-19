@@ -1,4 +1,3 @@
-// src/DashboardInterne/state.js
 const fs = require("fs");
 const path = require("path");
 
@@ -11,26 +10,22 @@ async function loadState(stateFile, logger) {
       return {
         lastLocationId: 0,
         lastAlertId: 0,
-        lastAlertUpdatedAt: null, // 👈 nouveau
       };
     }
 
     const raw = await fs.promises.readFile(full, "utf-8");
     const json = JSON.parse(raw || "{}");
 
-    const lastLocationId = Number(json.lastLocationId ?? json.last_location_id ?? 0) || 0;
-    const lastAlertId = Number(json.lastAlertId ?? json.last_alert_id ?? 0) || 0;
-
-    // ISO string ou null
-    const lastAlertUpdatedAt =
-      typeof (json.lastAlertUpdatedAt ?? json.last_alert_updated_at) === "string"
-        ? (json.lastAlertUpdatedAt ?? json.last_alert_updated_at)
-        : null;
-
-    return { lastLocationId, lastAlertId, lastAlertUpdatedAt };
+    return {
+      lastLocationId: Number(json.lastLocationId ?? json.last_location_id ?? 0) || 0,
+      lastAlertId: Number(json.lastAlertId ?? json.last_alert_id ?? 0) || 0,
+    };
   } catch (err) {
     logger?.error?.({ err }, "[DASH-INTERNE][STATE] load error");
-    return { lastLocationId: 0, lastAlertId: 0, lastAlertUpdatedAt: null };
+    return {
+      lastLocationId: 0,
+      lastAlertId: 0,
+    };
   }
 }
 
@@ -44,7 +39,6 @@ async function saveState(stateFile, state, logger) {
         {
           lastLocationId: Number(state.lastLocationId || 0),
           lastAlertId: Number(state.lastAlertId || 0),
-          lastAlertUpdatedAt: state.lastAlertUpdatedAt || null, // 👈 nouveau
         },
         null,
         2

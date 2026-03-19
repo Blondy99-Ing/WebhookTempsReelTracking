@@ -1,11 +1,10 @@
-// src/DashboardInterne/index.js
 const pino = require("pino");
 
 const config = require("./config");
-const { connectDb } = require("../db"); // ✅ on réutilise le db.js de la racine (src/db.js)
+const { connectDb } = require("../db");
 const { loadState, saveState } = require("./state");
 const { startPoller } = require("./poller");
-const { syncCursorsWithDb } = require("../cursor"); // ✅ on réutilise cursor.js racine
+const { syncCursorsWithDb } = require("./cursor");
 
 (async () => {
   const logger = pino({
@@ -22,8 +21,13 @@ const { syncCursorsWithDb } = require("../cursor"); // ✅ on réutilise cursor.
   try {
     logger.info(
       {
-        mysql: config.mysql,
-        dashboardUrl: config.dashboard?.url,
+        mysql: {
+          host: config.mysql.host,
+          port: config.mysql.port,
+          database: config.mysql.database,
+          user: config.mysql.user,
+        },
+        dashboardUrl: config.dashboard.url,
         stateFile: config.stateFile,
         hot: config.poll.hotIntervalMs,
         idle: config.poll.idleIntervalMs,
@@ -31,14 +35,11 @@ const { syncCursorsWithDb } = require("../cursor"); // ✅ on réutilise cursor.
       "[DASH-INTERNE] boot"
     );
 
-    // 1) DB
     const db = await connectDb(config.mysql, logger);
     logger.info("[DASH-INTERNE][DB] connected");
 
-    // 2) State
     const state = await loadState(config.stateFile, logger);
 
-    // 3) Normalize cursors (startFromNow = true)
     const changed = await syncCursorsWithDb({
       db,
       state,
@@ -49,12 +50,14 @@ const { syncCursorsWithDb } = require("../cursor"); // ✅ on réutilise cursor.
     if (changed) {
       await saveState(config.stateFile, state, logger);
       logger.info(
-        { lastLocationId: state.lastLocationId, lastAlertId: state.lastAlertId },
+        {
+          lastLocationId: state.lastLocationId,
+          lastAlertId: state.lastAlertId,
+        },
         "[DASH-INTERNE][STATE] normalized & saved"
       );
     }
 
-    // 4) Start poller (refresh mode)
     startPoller({ db, state, config, logger });
 
     logger.info("[DASH-INTERNE] running");

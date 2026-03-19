@@ -1,4 +1,3 @@
-// src/DashboardInterne/webhook.js
 const axios = require("axios");
 
 function sleep(ms) {
@@ -9,17 +8,19 @@ function getRetryAfterMs(headers) {
   const ra = headers?.["retry-after"];
   if (!ra) return null;
   const n = Number(ra);
-  if (!isNaN(n)) return n * 1000;
+  if (!Number.isNaN(n)) return n * 1000;
   return null;
 }
 
-/**
- * Appelle Laravel interne pour refresh Redis (dashboard)
- * POST DASHINT_DASH_WEBHOOK_URL
- * Header: X-INTERNAL-SECRET: DASHINT_INTERNAL_WEBHOOK_SECRET
- * Body: { what }
- */
-async function refreshDashboard({ url, secret, what, timeoutMs = 15000, maxRetries = 3, logger }) {
+async function refreshDashboard({
+  url,
+  secret,
+  what,
+  alertId = null,
+  timeoutMs = 15000,
+  maxRetries = 3,
+  logger,
+}) {
   let attempt = 0;
   const retries = Math.max(1, Number(maxRetries || 1));
 
@@ -27,9 +28,13 @@ async function refreshDashboard({ url, secret, what, timeoutMs = 15000, maxRetri
     attempt++;
 
     try {
+      // Construit le body : ajoute alert_id si fourni (cas alert_new)
+      const body = { what: what || "all" };
+      if (alertId != null) body.alert_id = alertId;
+
       const res = await axios.post(
         url,
-        { what: what || "all" },
+        body,
         {
           timeout: timeoutMs,
           headers: {
@@ -49,26 +54,38 @@ async function refreshDashboard({ url, secret, what, timeoutMs = 15000, maxRetri
 
       if (status === 429) {
         const retryAfterMs = getRetryAfterMs(res.headers) || 2000;
-        logger?.warn?.({ attempt, retries, status, retryAfterMs, what }, "[DASH-INTERNE][REFRESH] rate limited");
+        logger?.warn?.(
+          { attempt, retries, status, retryAfterMs, what },
+          "[DASH-INTERNE][REFRESH] rate limited"
+        );
         await sleep(retryAfterMs);
         continue;
       }
 
-      logger?.warn?.({ attempt, retries, status, what, data: res.data }, "[DASH-INTERNE][REFRESH] failed");
+      logger?.warn?.(
+        { attempt, retries, status, what, data: res.data },
+        "[DASH-INTERNE][REFRESH] failed"
+      );
 
-      // 4xx => secret invalid / validation => stop
       if (status >= 400 && status < 500) {
         return { ok: false, status, data: res.data };
       }
 
       await sleep(1000);
     } catch (err) {
-      logger?.warn?.({ attempt, retries, what, message: err.message }, "[DASH-INTERNE][REFRESH] exception");
+      logger?.warn?.(
+        { attempt, retries, what, message: err.message },
+        "[DASH-INTERNE][REFRESH] exception"
+      );
       await sleep(1000);
     }
   }
 
-  logger?.error?.({ what, message: "Max retries exceeded" }, "[DASH-INTERNE][REFRESH] giving up");
+  logger?.error?.(
+    { what, message: "Max retries exceeded" },
+    "[DASH-INTERNE][REFRESH] giving up"
+  );
+
   return { ok: false, status: null };
 }
 
