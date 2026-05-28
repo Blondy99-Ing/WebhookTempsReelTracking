@@ -56,12 +56,12 @@ async function fetchLocationsAfterId(db, lastId, limit) {
       id, mac_id_gps, latitude, longitude, speed, direction, status, user_name,
       sys_time, datetime, heart_time, processed, trip_id
     FROM locations
-    WHERE id > ${safeLastId}
+    WHERE id > ?
     ORDER BY id ASC
-    LIMIT ${safeLimit}
+    LIMIT ?
   `;
 
-  const [rows] = await db.query(sql);
+  const [rows] = await db.query(sql, [safeLastId, safeLimit]);
   return rows || [];
 }
 
@@ -87,12 +87,12 @@ async function fetchAlertsAfterId(db, lastId, limit) {
     SELECT
       id, voiture_id, alert_type, alerted_at, processed, latitude, longitude
     FROM alerts
-    WHERE id > ${safeLastId}
+    WHERE id > ?
     ORDER BY id ASC
-    LIMIT ${safeLimit}
+    LIMIT ?
   `;
 
-  const [rows] = await db.query(sql);
+  const [rows] = await db.query(sql, [safeLastId, safeLimit]);
   return rows || [];
 }
 

@@ -23,6 +23,7 @@ module.exports = {
     user: must("MYSQL_USER"),
     password: must("MYSQL_PASSWORD"),
     database: must("MYSQL_DATABASE"),
+    connectionLimit: int("MYSQL_CONNECTION_LIMIT", 5),
   },
 
   laravel: {
@@ -57,5 +58,6 @@ module.exports = {
   },
 
   stateFile: process.env.STATE_FILE || "./state/state.json",
+  lockFile: process.env.LOCK_FILE || "./state/proxym-tracking-bridge.lock",
   logLevel: process.env.LOG_LEVEL || "info",
 };

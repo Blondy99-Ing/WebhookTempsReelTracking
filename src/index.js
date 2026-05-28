@@ -2,10 +2,11 @@
 const pino = require("pino");
 const config = require("./config");
 
-const { connectDb } = require("./db");
+const { connectDb, closeDb } = require("./db");
 const { loadState, saveState } = require("./state");
 const { startPoller } = require("./poller");
 const { syncCursorsWithDb } = require("./cursor");
+const { acquireSingleInstanceLock } = require("./lock");
 
 (async () => {
   const logger = pino({
@@ -22,20 +23,68 @@ const { syncCursorsWithDb } = require("./cursor");
         : undefined,
   });
 
+  let db = null;
+  let stopPoller = null;
+  let releaseLock = null;
+  let shuttingDown = false;
+
+  async function shutdown(code = 0, reason = "shutdown") {
+    if (shuttingDown) return;
+    shuttingDown = true;
+
+    logger.info({ reason }, "[BRIDGE] shutting down");
+
+    try {
+      if (typeof stopPoller === "function") {
+        stopPoller();
+      }
+
+      await closeDb(db, logger);
+    } finally {
+      if (typeof releaseLock === "function") {
+        releaseLock();
+      }
+
+      process.exit(code);
+    }
+  }
+
+  process.on("SIGINT", () => shutdown(0, "SIGINT"));
+  process.on("SIGTERM", () => shutdown(0, "SIGTERM"));
+  process.on("uncaughtException", (err) => {
+    logger.fatal({ message: err.message, stack: err.stack }, "[BRIDGE] uncaught exception");
+    shutdown(1, "uncaughtException");
+  });
+  process.on("unhandledRejection", (err) => {
+    logger.fatal(
+      { message: err?.message || String(err), stack: err?.stack },
+      "[BRIDGE] unhandled rejection"
+    );
+    shutdown(1, "unhandledRejection");
+  });
+
   try {
     logger.info(
       {
-        mysql: config.mysql,
+        mysql: {
+          host: config.mysql.host,
+          port: config.mysql.port,
+          database: config.mysql.database,
+          user: config.mysql.user,
+          connectionLimit: config.mysql.connectionLimit,
+        },
         laravelUrl: config.laravel.url,
         locationEvent: config.laravel.locationEvent,
         alertEvent: config.laravel.alertEvent,
         stateFile: config.stateFile,
+        lockFile: config.lockFile,
       },
       "[BRIDGE] boot"
     );
 
-    const db = await connectDb(config.mysql, logger);
-    logger.info("[DB] connected");
+    releaseLock = acquireSingleInstanceLock(config.lockFile, logger, "BRIDGE");
+
+    db = await connectDb(config.mysql, logger);
 
     const state = await loadState(config.stateFile, logger);
 
@@ -57,7 +106,7 @@ const { syncCursorsWithDb } = require("./cursor");
       );
     }
 
-    startPoller({
+    stopPoller = startPoller({
       db,
       state,
       config,
@@ -66,7 +115,12 @@ const { syncCursorsWithDb } = require("./cursor");
 
     logger.info("[BRIDGE] running");
   } catch (err) {
-    console.error("FATAL", err);
+    logger.fatal({ message: err.message, stack: err.stack }, "[BRIDGE] fatal boot error");
+
+    if (typeof releaseLock === "function") {
+      releaseLock();
+    }
+
     process.exit(1);
   }
 })();

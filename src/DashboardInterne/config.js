@@ -24,6 +24,7 @@ module.exports = {
     user: must("MYSQL_USER"),
     password: must("MYSQL_PASSWORD"),
     database: must("MYSQL_DATABASE"),
+    connectionLimit: int("MYSQL_CONNECTION_LIMIT", 5),
   },
 
   dashboard: {
@@ -45,5 +46,6 @@ module.exports = {
   },
 
   stateFile: process.env.DASHINT_STATE_FILE || "./state/dashboard-interne.json",
+  lockFile: process.env.DASHINT_LOCK_FILE || "./state/proxym-dashboard-interne.lock",
   logLevel: process.env.LOG_LEVEL || "info",
 };
